@@ -1,14 +1,13 @@
 import prisma from "@/utils/prisma";
-import type { gmail_v1 } from "@googleapis/gmail";
 import { createHash } from "node:crypto";
 import groupBy from "lodash/groupBy";
-import { getMessage, getMessages } from "@/utils/gmail/message";
 import { findMatchingGroupItem } from "@/utils/group/find-matching-group";
-import { parseMessage } from "@/utils/mail";
 import { extractEmailAddress } from "@/utils/email";
 import { type GroupItem, GroupItemType } from "@prisma/client";
 import type { MessageWithGroupItem } from "@/app/(app)/[emailAccountId]/assistant/rule/[ruleId]/examples/types";
 import { SafeError } from "@/utils/error";
+import type { EmailProvider } from "@/utils/email-provider/types";
+import type { ParsedMessage } from "@/utils/types";
 
 const PAGE_SIZE = 20;
 
@@ -24,14 +23,14 @@ export type GroupEmailsResponse = Awaited<ReturnType<typeof getGroupEmails>>;
 export async function getGroupEmails({
   groupId,
   emailAccountId,
-  gmail,
+  emailProvider,
   from,
   to,
   pageToken,
 }: {
   groupId: string;
   emailAccountId: string;
-  gmail: gmail_v1.Gmail;
+  emailProvider: EmailProvider;
   from?: Date;
   to?: Date;
   pageToken?: string;
@@ -45,7 +44,7 @@ export async function getGroupEmails({
 
   const { messages, nextPageToken } = await fetchPaginatedMessages({
     groupItems: group.items,
-    gmail,
+    emailProvider,
     from,
     to,
     pageToken,
@@ -56,13 +55,13 @@ export async function getGroupEmails({
 
 export async function fetchPaginatedMessages({
   groupItems,
-  gmail,
+  emailProvider,
   from,
   to,
   pageToken,
 }: {
   groupItems: GroupItem[];
-  gmail: gmail_v1.Gmail;
+  emailProvider: EmailProvider;
   from?: Date;
   to?: Date;
   pageToken?: string;
@@ -97,7 +96,7 @@ export async function fetchPaginatedMessages({
 
   const { messages, nextPaginationState } = await fetchPaginatedGroupMessages(
     groupItems,
-    gmail,
+    emailProvider,
     from,
     to,
     paginationState,
@@ -126,7 +125,7 @@ function createGroupItemsHash(
 // and for each type, through multiple chunks
 async function fetchPaginatedGroupMessages(
   groupItems: GroupItem[],
-  gmail: gmail_v1.Gmail,
+  emailProvider: EmailProvider,
   from: Date | undefined,
   to: Date | undefined,
   paginationState: InternalPaginationState,
@@ -157,7 +156,7 @@ async function fetchPaginatedGroupMessages(
       const result = await fetchGroupMessages(
         type,
         chunk,
-        gmail,
+        emailProvider,
         PAGE_SIZE - messages.length,
         from,
         to,
@@ -206,7 +205,7 @@ async function fetchPaginatedGroupMessages(
 async function fetchGroupMessages(
   groupItemType: GroupItemType,
   groupItems: GroupItem[],
-  gmail: gmail_v1.Gmail,
+  emailProvider: EmailProvider,
   maxResults: number,
   from?: Date,
   to?: Date,
@@ -214,7 +213,7 @@ async function fetchGroupMessages(
 ): Promise<{ messages: MessageWithGroupItem[]; nextPageToken?: string }> {
   const query = buildQuery(groupItemType, groupItems, from, to);
 
-  const response = await getMessages(gmail, {
+  const response = await emailProvider.getMessages({
     query,
     maxResults,
     pageToken,
@@ -222,19 +221,22 @@ async function fetchGroupMessages(
 
   const messages = await Promise.all(
     (response.messages || []).map(async (message) => {
-      const m = await getMessage(message.id!, gmail);
-      const parsedMessage = parseMessage(m);
+      const m = await emailProvider.getMessage(message.id!);
+      if (!m) return null;
       const matchingGroupItem = findMatchingGroupItem(
-        parsedMessage.headers,
+        m.payload.headers,
         groupItems,
       );
-      return { ...parsedMessage, matchingGroupItem };
+      return { ...(m as unknown as ParsedMessage), matchingGroupItem };
     }),
   );
 
   return {
     // search might include messages that don't match the rule, so we filter those out
-    messages: messages.filter((message) => message.matchingGroupItem),
+    messages: messages.filter(
+      (message): message is MessageWithGroupItem =>
+        message !== null && !!message.matchingGroupItem,
+    ),
     nextPageToken: response.nextPageToken || undefined,
   };
 }

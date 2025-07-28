@@ -5,18 +5,18 @@ import {
   replyTrackerQuerySchema,
   type ReplyTrackerResponse,
 } from "./validation";
-import { validateApiKeyAndGetGmailClient } from "@/utils/api-auth";
+import { validateApiKeyAndGetEmailProvider } from "@/utils/api-auth";
 import { ThreadTrackerType } from "@prisma/client";
 import { getPaginatedThreadTrackers } from "@/app/(app)/[emailAccountId]/reply-zero/fetch-trackers";
-import { getThreadsBatchAndParse } from "@/utils/gmail/thread";
 import { isDefined } from "@/utils/types";
 import { getEmailAccountId } from "@/app/api/v1/helpers";
+import { Email, type Thread } from "@/utils/email-provider/types";
 
 const logger = createScopedLogger("api/v1/reply-tracker");
 
 export const GET = withError(async (request) => {
-  const { accessToken, userId, accountId } =
-    await validateApiKeyAndGetGmailClient(request);
+  const { emailProvider, userId, accountId } =
+    await validateApiKeyAndGetEmailProvider(request);
 
   const { searchParams } = new URL(request.url);
   const queryResult = replyTrackerQuerySchema.safeParse(
@@ -57,22 +57,31 @@ export const GET = withError(async (request) => {
       timeRange: queryResult.data.timeRange,
     });
 
-    const threads = await getThreadsBatchAndParse(
-      trackers.map((tracker) => tracker.threadId),
-      accessToken,
-      false,
-    );
+    const threads = (
+      await Promise.all(
+        trackers.map((tracker) => emailProvider.getThread(tracker.threadId)),
+      )
+    ).filter((t): t is Thread => t !== null);
 
     const response: ReplyTrackerResponse = {
-      emails: threads.threads
+      emails: threads
         .map((thread) => {
           const lastMessage = thread.messages[thread.messages.length - 1];
           if (!lastMessage) return null;
+          const subject =
+            lastMessage.payload.headers.find((h) => h.name === "Subject")
+              ?.value || "";
+          const from =
+            lastMessage.payload.headers.find((h) => h.name === "From")?.value ||
+            "";
+          const date =
+            lastMessage.payload.headers.find((h) => h.name === "Date")?.value ||
+            "";
           return {
             threadId: thread.id,
-            subject: lastMessage.headers.subject,
-            from: lastMessage.headers.from,
-            date: lastMessage.headers.date,
+            subject,
+            from,
+            date,
             snippet: lastMessage.snippet,
           };
         })

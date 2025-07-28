@@ -2,19 +2,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   validateApiKey,
   getUserFromApiKey,
-  validateApiKeyAndGetGmailClient,
+  validateApiKeyAndGetEmailProvider,
 } from "./api-auth";
 import prisma from "@/utils/__mocks__/prisma";
 import { hashApiKey } from "@/utils/api-key";
-import * as gmailClient from "@/utils/gmail/client";
+import { GmailProvider } from "@/utils/email-provider/gmail";
 import { SafeError } from "@/utils/error";
 import type { NextRequest } from "next/server";
-import type { gmail_v1 } from "@googleapis/gmail";
 
 // Mock dependencies
 vi.mock("@/utils/prisma");
 vi.mock("@/utils/api-key");
-vi.mock("@/utils/gmail/client");
+vi.mock("@/utils/email-provider/gmail");
 vi.mock("server-only", () => ({}));
 
 // Create a type that matches what our test expects to be returned from prisma.apiKey.findUnique
@@ -111,7 +110,7 @@ describe("api-auth", () => {
     });
   });
 
-  describe("validateApiKeyAndGetGmailClient", () => {
+  describe("validateApiKeyAndGetEmailProvider", () => {
     it("should throw an error if API key is invalid", async () => {
       const request = {
         headers: {
@@ -119,10 +118,10 @@ describe("api-auth", () => {
         },
       } as unknown as NextRequest;
 
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         SafeError,
       );
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         "Missing API key",
       );
     });
@@ -145,10 +144,10 @@ describe("api-auth", () => {
         isActive: true,
       } as MockApiKeyResult);
 
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         SafeError,
       );
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         "Missing account",
       );
     });
@@ -176,15 +175,15 @@ describe("api-auth", () => {
         isActive: true,
       } as MockApiKeyResult);
 
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         SafeError,
       );
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         "Missing access token",
       );
     });
 
-    it("should throw an error if Gmail client refresh fails", async () => {
+    it("should throw an error if GmailProvider creation fails", async () => {
       const request = {
         headers: {
           get: vi.fn().mockReturnValue("valid-api-key"),
@@ -195,6 +194,7 @@ describe("api-auth", () => {
         id: "user-id",
         accounts: [
           {
+            id: "account-id",
             access_token: "access-token",
             refresh_token: "refresh-token",
             expires_at: 1234567890,
@@ -209,20 +209,20 @@ describe("api-auth", () => {
         isActive: true,
       } as MockApiKeyResult);
 
-      // Mock getGmailClientWithRefresh to return null (refresh failed)
-      vi.mocked(gmailClient.getGmailClientWithRefresh).mockRejectedValue(
-        new Error("Error refreshing Gmail access token"),
+      // Mock GmailProvider.create to throw an error
+      vi.mocked(GmailProvider.create).mockRejectedValue(
+        new Error("Error creating GmailProvider"),
       );
 
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
         Error,
       );
-      await expect(validateApiKeyAndGetGmailClient(request)).rejects.toThrow(
-        "Error refreshing Gmail access token",
+      await expect(validateApiKeyAndGetEmailProvider(request)).rejects.toThrow(
+        "Error creating GmailProvider",
       );
     });
 
-    it("should return Gmail client and user ID if successful", async () => {
+    it("should return GmailProvider and user ID if successful", async () => {
       const request = {
         headers: {
           get: vi.fn().mockReturnValue("valid-api-key"),
@@ -233,6 +233,7 @@ describe("api-auth", () => {
         id: "user-id",
         accounts: [
           {
+            id: "account-id",
             access_token: "access-token",
             refresh_token: "refresh-token",
             expires_at: 1234567890,
@@ -247,27 +248,24 @@ describe("api-auth", () => {
         isActive: true,
       } as MockApiKeyResult);
 
-      // Mock successful Gmail client refresh
-      const mockGmailClient = {
-        users: {},
-      } as unknown as gmail_v1.Gmail;
-      vi.mocked(gmailClient.getGmailClientWithRefresh).mockResolvedValue(
-        mockGmailClient,
-      );
+      // Mock successful GmailProvider creation
+      const mockEmailProvider = {} as GmailProvider;
+      vi.mocked(GmailProvider.create).mockResolvedValue(mockEmailProvider);
 
-      const result = await validateApiKeyAndGetGmailClient(request);
+      const result = await validateApiKeyAndGetEmailProvider(request);
       expect(result).toEqual({
-        accessToken: "access-token",
-        gmail: mockGmailClient,
+        emailProvider: mockEmailProvider,
         userId: "user-id",
+        accountId: "account-id",
       });
 
-      // Verify getGmailClientWithRefresh was called with correct parameters
-      expect(gmailClient.getGmailClientWithRefresh).toHaveBeenCalledWith({
-        accessToken: "access-token",
-        refreshToken: "refresh-token",
-        expiresAt: 1234567890,
-      });
+      // Verify GmailProvider.create was called with correct parameters
+      expect(GmailProvider.create).toHaveBeenCalledWith(
+        "account-id",
+        "access-token",
+        "refresh-token",
+        1234567890,
+      );
     });
   });
 });
